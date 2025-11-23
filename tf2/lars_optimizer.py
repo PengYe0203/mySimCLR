@@ -62,6 +62,7 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
     """
     super(LARSOptimizer, self).__init__(name)
 
+    self.learning_rate = learning_rate
     self._set_hyper("learning_rate", learning_rate)
     self.momentum = momentum
     self.weight_decay = weight_decay
