@@ -124,6 +124,9 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
     if hasattr(self, "_built") and self._built:
       return
     self._built = True
+    # Create momentum slots
+    for var in var_list:
+      self.add_slot(var, "Momentum", initializer="zeros")
   
   def _distributed_apply(self, distribution, grads_and_vars, name, apply_state):
     """`apply_gradients` using a `DistributionStrategy`.
@@ -154,10 +157,6 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
         with tf.control_dependencies(update_ops):
           return self._iterations.assign_add(1, read_value=False)
       return self._iterations.assign_add(1)
-
-  def _create_slots(self, var_list):
-    for v in var_list:
-      self.add_slot(v, "Momentum")
 
   def _resource_apply_dense(self, grad, param, apply_state=None):
     if grad is None or param is None:
