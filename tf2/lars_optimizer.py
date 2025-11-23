@@ -60,10 +60,10 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       eeta: A `float` for scaling of learning rate when computing trust ratio.
       name: The name for the scope.
     """
+    # Pass learning_rate to base class (required in TF 2.18+)
     # Pass weight_decay=None to base class to disable its weight decay
     # LARS handles weight decay internally in _resource_apply_dense
-    super(LARSOptimizer, self).__init__(name=name, weight_decay=None)
-    self._learning_rate = learning_rate
+    super(LARSOptimizer, self).__init__(learning_rate=learning_rate, name=name, weight_decay=None)
     
     self.momentum = momentum
     self.weight_decay = weight_decay
@@ -80,14 +80,6 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
     
     # Store momentum variables in a simple list (serializable)
     self._momentum_list = []
-
-  @property
-  def learning_rate(self):
-    return self._learning_rate
-  
-  @learning_rate.setter
-  def learning_rate(self, value):
-    self._learning_rate = value
 
   def apply_gradients(self, grads_and_vars, name=None, skip_gradients_aggregation=False):
     """Apply gradients to variables.
@@ -264,11 +256,12 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
   def _fallback_apply_state(self, var_device, var_dtype):
     """Fallback apply state when not using TPU."""
     # Handle both float learning rate and learning rate schedule
-    if callable(self._learning_rate):
+    # Use self.learning_rate (base class property) instead of self._learning_rate
+    if callable(self.learning_rate):
       # Learning rate schedule - will be called with iterations
-      lr = self._learning_rate(self.iterations)
+      lr = self.learning_rate(self.iterations)
     else:
-      lr = self._learning_rate
+      lr = self.learning_rate
     return {"lr_t": tf.cast(lr, var_dtype)}
 
   def get_config(self):
