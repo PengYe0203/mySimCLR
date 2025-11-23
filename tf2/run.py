@@ -19,6 +19,22 @@ import json
 import math
 import os
 
+# Configure TensorFlow BEFORE any other imports
+import tensorflow.compat.v2 as tf
+
+# CRITICAL: Configure GPU memory growth IMMEDIATELY
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        # Also set visible devices to ensure proper initialization
+        tf.config.set_visible_devices(gpus, 'GPU')
+        logical_gpus = tf.config.list_logical_devices('GPU')
+        print(f"Physical GPUs: {len(gpus)}, Logical GPUs: {len(logical_gpus)}")
+    except RuntimeError as e:
+        print(f"GPU configuration error: {e}")
+
 from absl import app
 from absl import flags
 from absl import logging
@@ -26,19 +42,7 @@ import tf2.data as data_lib
 import tf2.metrics as metrics
 import tf2.model as model_lib
 import tf2.objective as obj_lib
-import tensorflow.compat.v2 as tf
 import tensorflow_datasets as tfds
-
-# Configure GPU memory growth to avoid CUDA errors
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        logical_gpus = tf.config.list_logical_devices('GPU')
-        print(f"Physical GPUs: {len(gpus)}, Logical GPUs: {len(logical_gpus)}")
-    except RuntimeError as e:
-        print(f"GPU configuration error: {e}")
 
 FLAGS = flags.FLAGS
 
