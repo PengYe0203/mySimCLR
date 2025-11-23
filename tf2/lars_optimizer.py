@@ -131,8 +131,10 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
     # Create momentum variables manually for all trainable variables
     for var in var_list:
       if var.ref() not in self._momentum_slots:
+        # Clean the variable name to make it a valid scope name
+        clean_name = var.name.replace(':', '_')
         self._momentum_slots[var.ref()] = tf.Variable(
-          tf.zeros_like(var), trainable=False, name=f"{var.name}/Momentum"
+          tf.zeros_like(var), trainable=False, name=f"{clean_name}/Momentum"
         )
   
   def _distributed_apply(self, distribution, grads_and_vars, name, apply_state):
@@ -180,7 +182,9 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
     v = self._momentum_slots.get(param.ref())
     if v is None:
       # Create momentum slot if it doesn't exist
-      v = tf.Variable(tf.zeros_like(param), trainable=False, name=f"{param.name}/Momentum")
+      # Clean the variable name to make it a valid scope name
+      clean_name = param.name.replace(':', '_')
+      v = tf.Variable(tf.zeros_like(param), trainable=False, name=f"{clean_name}/Momentum")
       self._momentum_slots[param.ref()] = v
 
     if self._use_weight_decay(param_name):
