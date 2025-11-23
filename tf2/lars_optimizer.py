@@ -60,10 +60,8 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       eeta: A `float` for scaling of learning rate when computing trust ratio.
       name: The name for the scope.
     """
-    super(LARSOptimizer, self).__init__(name)
+    super(LARSOptimizer, self).__init__(learning_rate=learning_rate, name=name)
 
-    self.learning_rate = learning_rate
-    self._set_hyper("learning_rate", learning_rate)
     self.momentum = momentum
     self.weight_decay = weight_decay
     self.use_nesterov = use_nesterov
