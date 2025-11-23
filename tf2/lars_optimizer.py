@@ -60,7 +60,9 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       eeta: A `float` for scaling of learning rate when computing trust ratio.
       name: The name for the scope.
     """
-    super(LARSOptimizer, self).__init__(name=name)
+    # Pass weight_decay=None to base class to disable its weight decay
+    # LARS handles weight decay internally in _resource_apply_dense
+    super(LARSOptimizer, self).__init__(name=name, weight_decay=None)
     self._learning_rate = learning_rate
     
     self.momentum = momentum
