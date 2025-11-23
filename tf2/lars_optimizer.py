@@ -92,12 +92,15 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       return
     self._built = True
   
-  def _distributed_apply(self, distribution, grads_and_vars, name, apply_state):
-    """`apply_gradients` using a `DistributionStrategy`."""
-    # Override base class to skip its weight decay logic
-    # LARS handles weight decay in _resource_apply_dense
-    return super(tf.keras.optimizers.Optimizer, self)._distributed_apply(
-        distribution, grads_and_vars, name, apply_state)
+  def apply_gradients(self, grads_and_vars, name=None, **kwargs):
+    """Apply gradients to variables.
+    
+    Override to skip base class weight decay logic since LARS handles it internally.
+    """
+    # Call grandparent's apply_gradients to skip Optimizer's weight decay
+    grads_and_vars = tuple(grads_and_vars)
+    return super(tf.keras.optimizers.Optimizer, self).apply_gradients(
+        grads_and_vars, name=name, **kwargs)
 
   def _create_slots(self, var_list):
     for v in var_list:
