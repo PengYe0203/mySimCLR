@@ -60,8 +60,9 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       eeta: A `float` for scaling of learning rate when computing trust ratio.
       name: The name for the scope.
     """
-    super(LARSOptimizer, self).__init__(learning_rate=learning_rate, name=name)
-
+    super(LARSOptimizer, self).__init__(name=name)
+    self._learning_rate = learning_rate
+    
     self.momentum = momentum
     self.weight_decay = weight_decay
     self.use_nesterov = use_nesterov
@@ -74,6 +75,16 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       self.exclude_from_layer_adaptation = exclude_from_layer_adaptation
     else:
       self.exclude_from_layer_adaptation = exclude_from_weight_decay
+
+  @property
+  def learning_rate(self):
+    return self._learning_rate
+
+  def build(self, var_list):
+    super().build(var_list)
+    if hasattr(self, "_built") and self._built:
+      return
+    self._built = True
 
   def _create_slots(self, var_list):
     for v in var_list:
@@ -154,6 +165,10 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
         if re.search(r, param_name) is not None:
           return False
     return True
+
+  def _fallback_apply_state(self, var_device, var_dtype):
+    """Fallback apply state when not using TPU."""
+    return {"lr_t": tf.cast(self._learning_rate, var_dtype)}
 
   def get_config(self):
     config = super(LARSOptimizer, self).get_config()
