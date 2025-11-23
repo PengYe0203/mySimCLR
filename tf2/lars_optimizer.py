@@ -79,6 +79,10 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
   @property
   def learning_rate(self):
     return self._learning_rate
+  
+  @learning_rate.setter
+  def learning_rate(self, value):
+    self._learning_rate = value
 
   def build(self, var_list):
     super().build(var_list)
@@ -172,7 +176,13 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
 
   def _fallback_apply_state(self, var_device, var_dtype):
     """Fallback apply state when not using TPU."""
-    return {"lr_t": tf.cast(self._learning_rate, var_dtype)}
+    # Handle both float learning rate and learning rate schedule
+    if callable(self._learning_rate):
+      # Learning rate schedule - will be called with iterations
+      lr = self._learning_rate(self.iterations)
+    else:
+      lr = self._learning_rate
+    return {"lr_t": tf.cast(lr, var_dtype)}
 
   def get_config(self):
     config = super(LARSOptimizer, self).get_config()
