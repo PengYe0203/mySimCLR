@@ -77,6 +77,9 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       self.exclude_from_layer_adaptation = exclude_from_layer_adaptation
     else:
       self.exclude_from_layer_adaptation = exclude_from_weight_decay
+    
+    # Initialize slots dictionary for momentum
+    self._momentum_slots = {}
 
   @property
   def learning_rate(self):
@@ -120,14 +123,17 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
         return tf.group(*update_ops)
 
   def build(self, var_list):
-    # Call parent build to initialize slots infrastructure
+    # Call parent build
     super().build(var_list)
     if hasattr(self, "_built") and self._built:
       return
     self._built = True
-    # Create momentum slots for all variables
+    # Create momentum variables manually for all trainable variables
     for var in var_list:
-      self.add_slot(var, "Momentum", initializer="zeros")
+      if var.ref() not in self._momentum_slots:
+        self._momentum_slots[var.ref()] = tf.Variable(
+          tf.zeros_like(var), trainable=False, name=f"{var.name}/Momentum"
+        )
   
   def _distributed_apply(self, distribution, grads_and_vars, name, apply_state):
     """`apply_gradients` using a `DistributionStrategy`.
@@ -170,7 +176,12 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
 
     param_name = param.name
 
-    v = self.get_slot(param, "Momentum")
+    # Get momentum variable from our custom slots dictionary
+    v = self._momentum_slots.get(param.ref())
+    if v is None:
+      # Create momentum slot if it doesn't exist
+      v = tf.Variable(tf.zeros_like(param), trainable=False, name=f"{param.name}/Momentum")
+      self._momentum_slots[param.ref()] = v
 
     if self._use_weight_decay(param_name):
       grad += self.weight_decay * param
