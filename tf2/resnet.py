@@ -47,29 +47,16 @@ class BatchNormRelu(tf.keras.layers.Layer):  # pylint: disable=missing-docstring
       axis = 1
     else:
       axis = -1
-    if FLAGS.global_bn:
-      # TODO(srbs): Set fused=True
-      # Batch normalization layers with fused=True only support 4D input
-      # tensors.
-      self.bn = tf.keras.layers.experimental.SyncBatchNormalization(
-          axis=axis,
-          momentum=FLAGS.batch_norm_decay,
-          epsilon=BATCH_NORM_EPSILON,
-          center=center,
-          scale=scale,
-          gamma_initializer=gamma_initializer)
-    else:
-      # TODO(srbs): Set fused=True
-      # Batch normalization layers with fused=True only support 4D input
-      # tensors.
-      self.bn = tf.keras.layers.BatchNormalization(
-          axis=axis,
-          momentum=FLAGS.batch_norm_decay,
-          epsilon=BATCH_NORM_EPSILON,
-          center=center,
-          scale=scale,
-          fused=False,
-          gamma_initializer=gamma_initializer)
+    # Use standard BatchNormalization for compatibility with TF 2.20+
+    # SyncBatchNormalization has been moved and changed in newer TF versions
+    self.bn = tf.keras.layers.BatchNormalization(
+        axis=axis,
+        momentum=FLAGS.batch_norm_decay,
+        epsilon=BATCH_NORM_EPSILON,
+        center=center,
+        scale=scale,
+        gamma_initializer=gamma_initializer,
+        synchronized=FLAGS.global_bn)
 
   def call(self, inputs, training):
     inputs = self.bn(inputs, training=training)
