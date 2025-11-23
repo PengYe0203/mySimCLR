@@ -86,6 +86,39 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
   def learning_rate(self, value):
     self._learning_rate = value
 
+  def apply_gradients(self, grads_and_vars, name=None, skip_gradients_aggregation=False):
+    """Apply gradients to variables.
+    
+    Completely override to bypass base class weight decay.
+    """
+    grads_and_vars = list(grads_and_vars)
+    if len(grads_and_vars) == 0:
+      return tf.no_op()
+    
+    grads, trainable_variables = zip(*grads_and_vars)
+    
+    # Prepare aggregation state
+    with tf.name_scope(self._name):
+      # Build if not already built
+      with tf.init_scope():
+        self.build(trainable_variables)
+      
+      # Increment iterations
+      self.iterations.assign_add(1)
+      
+      # Call _distributed_apply
+      if tf.distribute.has_strategy():
+        distribution = tf.distribute.get_strategy()
+        return self._distributed_apply(
+            distribution, grads_and_vars, name, apply_state=None)
+      else:
+        # Non-distributed case
+        update_ops = []
+        for grad, var in grads_and_vars:
+          if grad is not None:
+            update_ops.append(self._resource_apply_dense(grad, var))
+        return tf.group(*update_ops)
+
   def build(self, var_list):
     super().build(var_list)
     if hasattr(self, "_built") and self._built:
