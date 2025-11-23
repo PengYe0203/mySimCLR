@@ -77,9 +77,6 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       self.exclude_from_layer_adaptation = exclude_from_layer_adaptation
     else:
       self.exclude_from_layer_adaptation = exclude_from_weight_decay
-    
-    # Initialize slots dictionary for momentum
-    self._momentum_slots = {}
 
   @property
   def learning_rate(self):
@@ -128,14 +125,16 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
     if hasattr(self, "_built") and self._built:
       return
     self._built = True
-    # Create momentum variables manually for all trainable variables
+    # Use add_weight to create trackable momentum variables
     for var in var_list:
-      if var.ref() not in self._momentum_slots:
-        # Clean the variable name to make it a valid scope name
-        clean_name = var.name.replace(':', '_')
-        self._momentum_slots[var.ref()] = tf.Variable(
-          tf.zeros_like(var), trainable=False, name=f"{clean_name}/Momentum"
-        )
+      # Create momentum slot using add_weight (properly trackable)
+      self.add_weight(
+        name=f"momentum_{var.name.replace(':', '_').replace('/', '_')}",
+        shape=var.shape,
+        dtype=var.dtype,
+        initializer='zeros',
+        trainable=False
+      )
   
   def _distributed_apply(self, distribution, grads_and_vars, name, apply_state):
     """`apply_gradients` using a `DistributionStrategy`.
@@ -178,14 +177,23 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
 
     param_name = param.name
 
-    # Get momentum variable from our custom slots dictionary
-    v = self._momentum_slots.get(param.ref())
+    # Get momentum variable using the naming convention from build()
+    momentum_name = f"momentum_{param.name.replace(':', '_').replace('/', '_')}"
+    v = None
+    for weight in self.weights:
+      if momentum_name in weight.name:
+        v = weight
+        break
+    
     if v is None:
-      # Create momentum slot if it doesn't exist
-      # Clean the variable name to make it a valid scope name
-      clean_name = param.name.replace(':', '_')
-      v = tf.Variable(tf.zeros_like(param), trainable=False, name=f"{clean_name}/Momentum")
-      self._momentum_slots[param.ref()] = v
+      # Fallback: create momentum variable if not found
+      v = self.add_weight(
+        name=momentum_name,
+        shape=param.shape,
+        dtype=param.dtype,
+        initializer='zeros',
+        trainable=False
+      )
 
     if self._use_weight_decay(param_name):
       grad += self.weight_decay * param
