@@ -86,6 +86,7 @@ class WarmUpAndCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
 
   def __call__(self, step):
     with tf.name_scope(self._name or 'WarmUpAndCosineDecay'):
+      step = tf.cast(step, tf.float32)
       warmup_steps = int(
           round(FLAGS.warmup_epochs * self.num_examples //
                 FLAGS.train_batch_size))
