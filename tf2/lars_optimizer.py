@@ -120,11 +120,12 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
         return tf.group(*update_ops)
 
   def build(self, var_list):
+    # Call parent build to initialize slots infrastructure
     super().build(var_list)
     if hasattr(self, "_built") and self._built:
       return
     self._built = True
-    # Create momentum slots
+    # Create momentum slots for all variables
     for var in var_list:
       self.add_slot(var, "Momentum", initializer="zeros")
   
