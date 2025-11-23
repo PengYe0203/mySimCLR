@@ -98,7 +98,7 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
     grads, trainable_variables = zip(*grads_and_vars)
     
     # Prepare aggregation state
-    with tf.name_scope(self._name):
+    with tf.name_scope(self.name):
       # Build if not already built
       with tf.init_scope():
         self.build(trainable_variables)
