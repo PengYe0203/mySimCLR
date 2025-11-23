@@ -139,7 +139,7 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
     eagerly_outside_functions = hasattr(distribution.extended,
                                        "_retrace_functions_for_each_device")
     update_ops = []
-    with tf.name_scope(name or self._name):
+    with tf.name_scope(name or self.name):
       for grad, var in grads_and_vars:
         if grad is not None:
           with distribution.extended.colocate_vars_with(var):
