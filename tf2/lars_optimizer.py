@@ -92,15 +92,35 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       return
     self._built = True
   
-  def apply_gradients(self, grads_and_vars, name=None, **kwargs):
-    """Apply gradients to variables.
+  def _distributed_apply(self, distribution, grads_and_vars, name, apply_state):
+    """`apply_gradients` using a `DistributionStrategy`.
     
-    Override to skip base class weight decay logic since LARS handles it internally.
+    Override to bypass base class weight decay since LARS handles it internally.
     """
-    # Call grandparent's apply_gradients to skip Optimizer's weight decay
-    grads_and_vars = tuple(grads_and_vars)
-    return super(tf.keras.optimizers.Optimizer, self).apply_gradients(
-        grads_and_vars, name=name, **kwargs)
+    def apply_grad_to_update_var(var, grad):
+      """Apply gradient to variable."""
+      if grad is None:
+        return tf.no_op()
+      return self._resource_apply_dense(grad, var, apply_state=apply_state)
+    
+    eagerly_outside_functions = hasattr(distribution.extended,
+                                       "_retrace_functions_for_each_device")
+    update_ops = []
+    with tf.name_scope(name or self._name):
+      for grad, var in grads_and_vars:
+        if grad is not None:
+          with distribution.extended.colocate_vars_with(var):
+            with tf.name_scope("update" if eagerly_outside_functions else
+                             "update_" + var.op.name):
+              update_op = distribution.extended.update(
+                  var, apply_grad_to_update_var, args=(grad,), group=False)
+              update_ops.append(update_op)
+      
+      any_symbolic = any(isinstance(i, tf.Operation) for i in update_ops)
+      if not tf.executing_eagerly() or any_symbolic:
+        with tf.control_dependencies(update_ops):
+          return self._iterations.assign_add(1, read_value=False)
+      return self._iterations.assign_add(1)
 
   def _create_slots(self, var_list):
     for v in var_list:
