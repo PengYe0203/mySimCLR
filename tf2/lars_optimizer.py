@@ -151,18 +151,22 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
     if not self.weight_decay:
       return False
     if self.exclude_from_weight_decay:
+      # Convert to string if it's a tensor or variable
+      param_name_str = param_name if isinstance(param_name, str) else str(param_name)
       for r in self.exclude_from_weight_decay:
         # TODO(srbs): Try to avoid name based filtering.
-        if re.search(r, param_name) is not None:
+        if re.search(r, param_name_str) is not None:
           return False
     return True
 
   def _do_layer_adaptation(self, param_name):
     """Whether to do layer-wise learning rate adaptation for `param_name`."""
     if self.exclude_from_layer_adaptation:
+      # Convert to string if it's a tensor or variable
+      param_name_str = param_name if isinstance(param_name, str) else str(param_name)
       for r in self.exclude_from_layer_adaptation:
         # TODO(srbs): Try to avoid name based filtering.
-        if re.search(r, param_name) is not None:
+        if re.search(r, param_name_str) is not None:
           return False
     return True
 
