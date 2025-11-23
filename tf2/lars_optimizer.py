@@ -77,6 +77,9 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       self.exclude_from_layer_adaptation = exclude_from_layer_adaptation
     else:
       self.exclude_from_layer_adaptation = exclude_from_weight_decay
+    
+    # Store momentum variables in a simple list (serializable)
+    self._momentum_list = []
 
   @property
   def learning_rate(self):
@@ -120,14 +123,21 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
         return tf.group(*update_ops)
 
   def build(self, var_list):
-    # Call parent build to initialize slot infrastructure
+    # Call parent build
     super().build(var_list)
     if hasattr(self, "_built") and self._built:
       return
     self._built = True
-    # Create momentum slots for each variable
+    # Create momentum variables and store in list
+    self._momentum_list = []
     for var in var_list:
-      self.add_slot(var, "momentum")
+      with tf.device(var.device):
+        momentum_var = tf.Variable(
+          tf.zeros_like(var),
+          trainable=False,
+          name=f"{self.name}/momentum/{var.name.split(':')[0].replace('/', '_')}"
+        )
+        self._momentum_list.append(momentum_var)
   
   def _distributed_apply(self, distribution, grads_and_vars, name, apply_state):
     """`apply_gradients` using a `DistributionStrategy`.
@@ -170,8 +180,19 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
 
     param_name = param.name
 
-    # Get momentum slot variable
-    v = self.get_slot(param, "momentum")
+    # Find momentum variable by matching parameter name
+    v = None
+    param_base_name = param.name.split(':')[0]
+    for momentum_var in self._momentum_list:
+      if param_base_name.replace('/', '_') in momentum_var.name:
+        v = momentum_var
+        break
+    
+    if v is None:
+      # Create momentum variable if not found (shouldn't happen if build was called)
+      with tf.device(param.device):
+        v = tf.Variable(tf.zeros_like(param), trainable=False)
+        self._momentum_list.append(v)
 
     if self._use_weight_decay(param_name):
       grad += self.weight_decay * param
