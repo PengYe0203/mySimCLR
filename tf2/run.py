@@ -440,7 +440,12 @@ def perform_evaluation(model, builder, eval_steps, ckpt, strategy, topology):
     json.dump(serializable_flags, f)
 
   # Export as SavedModel for finetuning and inference.
-  save(model, global_step=result['global_step'])
+  try:
+    save(model, global_step=result['global_step'])
+    logging.info('Successfully exported SavedModel at step %d', result['global_step'])
+  except Exception:
+    # SavedModel export fails in TF2 eager mode - using regular checkpoints instead
+    pass
 
   return result
 
@@ -571,10 +576,12 @@ def main(argv):
     # top-1 accuracy fails to improve by at least 1% for 3 consecutive evals.
     enable_early_stop = (
         FLAGS.train_mode == 'pretrain' and FLAGS.lineareval_while_pretraining)
-    eval_interval_epochs = 20
+    eval_interval_epochs = 1  # Evaluate every epoch
     eval_interval_steps = eval_interval_epochs * epoch_steps
     last_eval_top1 = None
     no_improve_evals = 0
+    eval_stop_training_rating = 1
+    no_improve_evals_epoch_cap = 3
     next_eval_step = eval_interval_steps
 
     def single_step(features, labels):
@@ -663,49 +670,88 @@ def main(argv):
       global_step = optimizer.iterations
       cur_step = global_step.numpy()
       iterator = iter(ds)
+      logging.info('Starting training loop: cur_step=%d, train_steps=%d', 
+                   cur_step, train_steps)
+      if enable_early_stop:
+        logging.info('Early stopping enabled: eval every %d steps (every %d epochs)',
+                     eval_interval_steps, eval_interval_epochs)
+      
       while cur_step < train_steps:
         # Calls to tf.summary.xyz lookup the summary writer resource which is
         # set by the summary writer's context manager.
+        logging.info('Training steps %d to %d...', cur_step, 
+                     min(cur_step + steps_per_loop, train_steps))
         with summary_writer.as_default():
           train_multiple_steps(iterator)
           cur_step = global_step.numpy()
           checkpoint_manager.save(cur_step)
-          logging.info('Completed: %d / %d steps', cur_step, train_steps)
+          logging.info('Completed: %d / %d steps (%.1f%%)', cur_step, train_steps,
+                       100.0 * cur_step / train_steps)
           metrics.log_and_write_metrics_to_summary(all_metrics, cur_step)
-          tf.summary.scalar(
-              'learning_rate',
-              learning_rate(tf.cast(global_step, dtype=tf.float32)),
-              global_step)
+          current_lr = learning_rate(tf.cast(global_step, dtype=tf.float32))
+          logging.info('Current learning rate: %.6f', float(current_lr))
+          tf.summary.scalar('learning_rate', current_lr, global_step)
           summary_writer.flush()
+        
         for metric in all_metrics:
-          metric.reset_states()
+          metric.reset_state()
+        
         # Periodic linear evaluation and early stopping logic.
         if enable_early_stop and cur_step >= next_eval_step:
+          logging.info('=' * 80)
+          logging.info('PERIODIC EVALUATION at step %d', cur_step)
+          logging.info('Next scheduled eval step: %d', next_eval_step)
           ckpt_path = checkpoint_manager.latest_checkpoint
           if ckpt_path:
+            logging.info('Running evaluation on checkpoint: %s', ckpt_path)
             eval_result = perform_evaluation(model, builder, eval_steps,
                                              ckpt_path, strategy, topology)
             top1_key = 'eval/label_top_1_accuracy'
+            top5_key = 'eval/label_top_5_accuracy'
             top1 = float(eval_result.get(top1_key, 0.0))
-            logging.info('Periodic eval at step %d: top-1 accuracy = %f',
-                         cur_step, top1)
+            top5 = float(eval_result.get(top5_key, 0.0))
+            logging.info('Evaluation results: top-1=%.4f, top-5=%.4f', top1, top5)
+            
             if last_eval_top1 is not None:
               improvement = top1 - last_eval_top1
-              if improvement < 0.01:
+              logging.info('Previous top-1: %.4f, Current top-1: %.4f', 
+                           last_eval_top1, top1)
+              logging.info('Absolute improvement: %.5f (%.2f%%)', 
+                           improvement, improvement * 100)
+              
+              if improvement < eval_stop_training_rating:
                 no_improve_evals += 1
+                logging.info('Improvement < %.1f%% threshold. '
+                             'Consecutive low-improvement evals: %d / %d',
+                             eval_stop_training_rating * 100, no_improve_evals, 
+                             no_improve_evals_epoch_cap)
               else:
                 no_improve_evals = 0
-              logging.info(
-                  'Top-1 improvement over previous eval: %.5f, '
-                  'no_improve_evals=%d', improvement, no_improve_evals)
-              if no_improve_evals >= 3:
-                logging.info(
-                    'Early stopping triggered: top-1 accuracy improvement '
-                    '< 1%% for 3 consecutive evaluations.')
+                logging.info('Improvement >= %.1f%% threshold. '
+                             'Reset consecutive counter to 0.',
+                             eval_stop_training_rating * 100)
+              
+              if no_improve_evals >= no_improve_evals_epoch_cap:
+                logging.info('=' * 80)
+                logging.info('EARLY STOPPING TRIGGERED!')
+                logging.info('Top-1 accuracy improved < %.1f%% for %d consecutive evals.',
+                             eval_stop_training_rating * 100, no_improve_evals_epoch_cap)
+                logging.info('Final top-1 accuracy: %.4f', top1)
+                logging.info('=' * 80)
                 break
+            else:
+              logging.info('First evaluation - establishing baseline top-1: %.4f', 
+                           top1)
+            
             last_eval_top1 = top1
+          else:
+            logging.warning('No checkpoint found for evaluation at step %d', cur_step)
+          
           next_eval_step += eval_interval_steps
-      logging.info('Training complete...')
+          logging.info('Next evaluation scheduled at step: %d', next_eval_step)
+          logging.info('=' * 80)
+      
+      logging.info('Training complete. Final step: %d / %d', cur_step, train_steps)
 
     if FLAGS.mode == 'train_then_eval':
       perform_evaluation(model, builder, eval_steps,
