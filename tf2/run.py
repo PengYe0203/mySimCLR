@@ -250,6 +250,23 @@ flags.DEFINE_boolean(
     'use_blur', True,
     'Whether or not to use Gaussian blur for augmentation during pretraining.')
 
+flags.DEFINE_integer(
+    'eval_interval_epochs', 10,
+    'How often to run linear evaluation during pretraining (in epochs). '
+    'Only applies when lineareval_while_pretraining=True.')
+
+flags.DEFINE_float(
+    'early_stop_threshold', 0.01,
+    'Minimum improvement threshold for early stopping (as a fraction, e.g., 0.01 = 1%). '
+    'Training stops if top-1 accuracy improves less than this for '
+    'early_stop_epochs consecutive evaluations.')
+
+flags.DEFINE_integer(
+    'early_stop_epochs', 3,
+    'Number of consecutive evaluations with low improvement before early stopping. '
+    'Training stops if top-1 accuracy improves less than early_stop_threshold '
+    'for this many consecutive evaluations.')
+
 
 def get_salient_tensors_dict(include_projection_head):
   """Returns a dictionary of tensors."""
@@ -573,15 +590,15 @@ def main(argv):
     steps_per_loop = checkpoint_steps
 
     # Early stopping configuration: run periodic linear evaluation and stop if
-    # top-1 accuracy fails to improve by at least 1% for 3 consecutive evals.
+    # top-1 accuracy fails to improve by threshold for consecutive evals.
     enable_early_stop = (
         FLAGS.train_mode == 'pretrain' and FLAGS.lineareval_while_pretraining)
-    eval_interval_epochs = 1  # Evaluate every epoch
+    eval_interval_epochs = FLAGS.eval_interval_epochs
     eval_interval_steps = eval_interval_epochs * epoch_steps
     last_eval_top1 = None
     no_improve_evals = 0
-    eval_stop_training_rating = 1
-    no_improve_evals_epoch_cap = 3
+    eval_stop_training_rating = FLAGS.early_stop_threshold
+    no_improve_evals_epoch_cap = FLAGS.early_stop_epochs
     next_eval_step = eval_interval_steps
 
     def single_step(features, labels):
