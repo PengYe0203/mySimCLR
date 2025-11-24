@@ -567,6 +567,16 @@ def main(argv):
 
     steps_per_loop = checkpoint_steps
 
+    # Early stopping configuration: run periodic linear evaluation and stop if
+    # top-1 accuracy fails to improve by at least 1% for 3 consecutive evals.
+    enable_early_stop = (
+        FLAGS.train_mode == 'pretrain' and FLAGS.lineareval_while_pretraining)
+    eval_interval_epochs = 20
+    eval_interval_steps = eval_interval_epochs * epoch_steps
+    last_eval_top1 = None
+    no_improve_evals = 0
+    next_eval_step = eval_interval_steps
+
     def single_step(features, labels):
       with tf.GradientTape() as tape:
         # Log summaries on the last step of the training loop to match
@@ -669,6 +679,32 @@ def main(argv):
           summary_writer.flush()
         for metric in all_metrics:
           metric.reset_states()
+        # Periodic linear evaluation and early stopping logic.
+        if enable_early_stop and cur_step >= next_eval_step:
+          ckpt_path = checkpoint_manager.latest_checkpoint
+          if ckpt_path:
+            eval_result = perform_evaluation(model, builder, eval_steps,
+                                             ckpt_path, strategy, topology)
+            top1_key = 'eval/label_top_1_accuracy'
+            top1 = float(eval_result.get(top1_key, 0.0))
+            logging.info('Periodic eval at step %d: top-1 accuracy = %f',
+                         cur_step, top1)
+            if last_eval_top1 is not None:
+              improvement = top1 - last_eval_top1
+              if improvement < 0.01:
+                no_improve_evals += 1
+              else:
+                no_improve_evals = 0
+              logging.info(
+                  'Top-1 improvement over previous eval: %.5f, '
+                  'no_improve_evals=%d', improvement, no_improve_evals)
+              if no_improve_evals >= 3:
+                logging.info(
+                    'Early stopping triggered: top-1 accuracy improvement '
+                    '< 1%% for 3 consecutive evaluations.')
+                break
+            last_eval_top1 = top1
+          next_eval_step += eval_interval_steps
       logging.info('Training complete...')
 
     if FLAGS.mode == 'train_then_eval':
