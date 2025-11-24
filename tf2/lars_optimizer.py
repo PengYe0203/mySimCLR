@@ -60,10 +60,16 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
       eeta: A `float` for scaling of learning rate when computing trust ratio.
       name: The name for the scope.
     """
-    # Pass learning_rate to base class (required in TF 2.18+)
+    # Pass learning_rate to base class (required in some TF versions)
     # Pass weight_decay=None to base class to disable its weight decay
     # LARS handles weight decay internally in _resource_apply_dense
-    super(LARSOptimizer, self).__init__(learning_rate=learning_rate, name=name, weight_decay=None)
+    try:
+      # Try newer Keras 3 / TF 2.16+ API
+      super(LARSOptimizer, self).__init__(learning_rate=learning_rate, name=name, weight_decay=None)
+    except TypeError:
+      # Fall back to older API that doesn't accept learning_rate in __init__
+      super(LARSOptimizer, self).__init__(name=name)
+      self._learning_rate = learning_rate
     
     self.momentum = momentum
     self.weight_decay = weight_decay
@@ -256,12 +262,17 @@ class LARSOptimizer(tf.keras.optimizers.Optimizer):
   def _fallback_apply_state(self, var_device, var_dtype):
     """Fallback apply state when not using TPU."""
     # Handle both float learning rate and learning rate schedule
-    # Use self.learning_rate (base class property) instead of self._learning_rate
-    if callable(self.learning_rate):
+    # Try self.learning_rate (property) or self._learning_rate (fallback)
+    try:
+      lr_value = self.learning_rate
+    except AttributeError:
+      lr_value = self._learning_rate
+    
+    if callable(lr_value):
       # Learning rate schedule - will be called with iterations
-      lr = self.learning_rate(self.iterations)
+      lr = lr_value(self.iterations)
     else:
-      lr = self.learning_rate
+      lr = lr_value
     return {"lr_t": tf.cast(lr, var_dtype)}
 
   def get_config(self):
