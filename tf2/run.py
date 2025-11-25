@@ -861,14 +861,24 @@ def main(argv):
       while True:
         # Calls to tf.summary.xyz lookup the summary writer resource which is
         # set by the summary writer's context manager.
-        logging.info('Training steps %d to %d...', cur_step, 
-                     min(cur_step + steps_per_loop, train_steps))
+        if cur_step >= original_train_steps and enable_late_stop:
+          # In extended training mode
+          logging.info('Training steps %d to %d (extended training, original goal: %d)...', 
+                       cur_step, min(cur_step + steps_per_loop, train_steps), original_train_steps)
+        else:
+          logging.info('Training steps %d to %d...', cur_step, 
+                       min(cur_step + steps_per_loop, train_steps))
         with summary_writer.as_default():
           train_multiple_steps(iterator)
           cur_step = global_step.numpy()
           checkpoint_manager.save(cur_step)
-          logging.info('Completed: %d / %d steps (%.1f%%)', cur_step, train_steps,
-                       100.0 * cur_step / train_steps)
+          if cur_step >= original_train_steps and enable_late_stop:
+            logging.info('Completed: %d steps (extended: %.1f%% beyond original %d goal)', 
+                         cur_step, 100.0 * (cur_step - original_train_steps) / original_train_steps,
+                         original_train_steps)
+          else:
+            logging.info('Completed: %d / %d steps (%.1f%%)', cur_step, train_steps,
+                         100.0 * cur_step / train_steps)
           metrics.log_and_write_metrics_to_summary(all_metrics, cur_step)
           current_lr = learning_rate(tf.cast(global_step, dtype=tf.float32))
           logging.info('Current learning rate: %.6f', float(current_lr))
@@ -924,7 +934,21 @@ def main(argv):
             if check_late_stop(cur_step, original_train_steps, no_improve_evals,
                               no_improve_evals_epoch_cap, FLAGS.train_epochs):
               break
-            # Otherwise continue training (message logged in check_late_stop)
+            # Otherwise continue training - extend train_steps for proper logging
+            if train_steps == original_train_steps:
+              # First time extending, set to next eval step
+              train_steps = next_eval_step
+              # Update the learning rate schedule to use extended steps
+              learning_rate.set_extended_total_steps(train_steps)
+              logging.info('Extended training goal to step %d for late stopping.', train_steps)
+              logging.info('Updated learning rate schedule to decay until step %d.', train_steps)
+            elif cur_step >= train_steps:
+              # Need to extend again
+              train_steps = next_eval_step
+              # Update the learning rate schedule again
+              learning_rate.set_extended_total_steps(train_steps)
+              logging.info('Extended training goal to step %d for late stopping.', train_steps)
+              logging.info('Updated learning rate schedule to decay until step %d.', train_steps)
           else:
             # No late stop - just finish at the goal
             logging.info('Reached epoch %d goal.', FLAGS.train_epochs)
