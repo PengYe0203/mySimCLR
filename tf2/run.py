@@ -59,6 +59,11 @@ flags.DEFINE_float(
     'warmup_epochs', 10,
     'Number of epochs of warmup.')
 
+flags.DEFINE_float(
+    'minimum_learning_rate', 1e-5,
+    'Minimum learning rate floor. Learning rate will not decay below this value. '
+    'Useful for late stopping to ensure continued learning.')
+
 flags.DEFINE_float('weight_decay', 1e-6, 'Amount of weight decay to use.')
 
 flags.DEFINE_float(
@@ -938,17 +943,11 @@ def main(argv):
             if train_steps == original_train_steps:
               # First time extending, set to next eval step
               train_steps = next_eval_step
-              # Update the learning rate schedule to use extended steps
-              learning_rate.set_extended_total_steps(train_steps)
               logging.info('Extended training goal to step %d for late stopping.', train_steps)
-              logging.info('Updated learning rate schedule to decay until step %d.', train_steps)
             elif cur_step >= train_steps:
               # Need to extend again
               train_steps = next_eval_step
-              # Update the learning rate schedule again
-              learning_rate.set_extended_total_steps(train_steps)
               logging.info('Extended training goal to step %d for late stopping.', train_steps)
-              logging.info('Updated learning rate schedule to decay until step %d.', train_steps)
           else:
             # No late stop - just finish at the goal
             logging.info('Reached epoch %d goal.', FLAGS.train_epochs)

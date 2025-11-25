@@ -76,26 +76,13 @@ def get_train_steps(num_examples):
 
 
 class WarmUpAndCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
-  """Applies a warmup schedule on a given learning rate decay schedule.
-  
-  Supports dynamic extension of total_steps for late stopping scenarios.
-  """
+  """Applies a warmup schedule on a given learning rate decay schedule."""
 
   def __init__(self, base_learning_rate, num_examples, name=None):
     super(WarmUpAndCosineDecay, self).__init__()
     self.base_learning_rate = base_learning_rate
     self.num_examples = num_examples
     self._name = name
-    # Track extended total steps for late stopping
-    self._extended_total_steps = None
-
-  def set_extended_total_steps(self, extended_steps):
-    """Set extended total steps for late stopping continuation.
-    
-    Args:
-      extended_steps: New total training steps when continuing beyond original goal.
-    """
-    self._extended_total_steps = extended_steps
 
   def __call__(self, step):
     with tf.name_scope(self._name or 'WarmUpAndCosineDecay'):
@@ -114,18 +101,17 @@ class WarmUpAndCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
           step / float(warmup_steps) * scaled_lr if warmup_steps else scaled_lr)
 
       # Cosine decay learning rate schedule
-      # Use extended steps if available (for late stopping), otherwise use original
-      if self._extended_total_steps is not None:
-        total_steps = self._extended_total_steps
-      else:
-        total_steps = get_train_steps(self.num_examples)
-      
-      decay_steps = tf.maximum(total_steps - warmup_steps, 1)
+      total_steps = get_train_steps(self.num_examples)
       # TODO(srbs): Cache this object.
-      cosine_decay = tf.keras.optimizers.schedules.CosineDecay(
-          scaled_lr, decay_steps)
+      cosine_decay = tf.keras.experimental.CosineDecay(
+          scaled_lr, total_steps - warmup_steps)
       learning_rate = tf.where(step < warmup_steps, learning_rate,
                                cosine_decay(step - warmup_steps))
+
+      # Apply minimum learning rate floor to ensure continued learning
+      # during late stopping or extended training
+      minimum_lr = tf.cast(FLAGS.minimum_learning_rate, tf.float32)
+      learning_rate = tf.maximum(learning_rate, minimum_lr)
 
       return learning_rate
 
