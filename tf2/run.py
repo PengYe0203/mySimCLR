@@ -250,20 +250,31 @@ flags.DEFINE_boolean(
     'use_blur', True,
     'Whether or not to use Gaussian blur for augmentation during pretraining.')
 
+flags.DEFINE_bool(
+    'early_stop', False,
+    'Enable early stopping: stop training before reaching train_epochs if model '
+    'stops improving. Requires lineareval_while_pretraining=True.')
+
+flags.DEFINE_bool(
+    'late_stop', False,
+    'Enable late stopping: continue training beyond train_epochs if model is '
+    'still improving. Requires lineareval_while_pretraining=True.')
+
 flags.DEFINE_integer(
     'eval_interval_epochs', 10,
-    'How often to run linear evaluation during pretraining (in epochs). '
-    'Only applies when lineareval_while_pretraining=True.')
+    'How often to run linear evaluation (in epochs). '
+    'If early_stop=True: evaluates from the beginning. '
+    'If late_stop=True only: evaluates only after reaching train_epochs.')
 
 flags.DEFINE_float(
     'early_stop_threshold', 0.01,
-    'Minimum improvement threshold for early stopping (as a fraction, e.g., 0.01 = 1%). '
+    'Minimum improvement threshold for stopping (as a fraction, e.g., 0.01 = 1%). '
     'Training stops if top-1 accuracy improves less than this for '
     'early_stop_epochs consecutive evaluations.')
 
 flags.DEFINE_integer(
     'early_stop_epochs', 3,
-    'Number of consecutive evaluations with low improvement before early stopping. '
+    'Number of consecutive evaluations with low improvement before stopping. '
     'Training stops if top-1 accuracy improves less than early_stop_threshold '
     'for this many consecutive evaluations.')
 
@@ -373,6 +384,144 @@ def json_serializable(val):
     return True
   except TypeError:
     return False
+
+
+def run_periodic_evaluation(model, builder, eval_steps, checkpoint_manager, 
+                            strategy, topology, cur_step, epoch_steps, 
+                            train_epochs, last_eval_top1, no_improve_evals,
+                            eval_stop_training_rating, no_improve_evals_epoch_cap):
+  """Run periodic evaluation and return updated tracking variables.
+  
+  Args:
+    model: The model to evaluate.
+    builder: DatasetBuilder for evaluation data.
+    eval_steps: Number of evaluation steps.
+    checkpoint_manager: Checkpoint manager for loading checkpoints.
+    strategy: Distribution strategy.
+    topology: TPU topology (if applicable).
+    cur_step: Current training step.
+    epoch_steps: Number of steps per epoch.
+    train_epochs: Total training epochs.
+    last_eval_top1: Previous evaluation's top-1 accuracy.
+    no_improve_evals: Count of consecutive low-improvement evaluations.
+    eval_stop_training_rating: Minimum improvement threshold.
+    no_improve_evals_epoch_cap: Max consecutive low-improvement evals before stopping.
+    
+  Returns:
+    Tuple of (new_last_eval_top1, new_no_improve_evals, should_stop)
+  """
+  current_epoch = cur_step / epoch_steps
+  logging.info('=' * 80)
+  logging.info('PERIODIC EVALUATION at step %d (epoch %.1f / %d)', 
+               cur_step, current_epoch, train_epochs)
+  
+  ckpt_path = checkpoint_manager.latest_checkpoint
+  if not ckpt_path:
+    logging.warning('No checkpoint found for evaluation at step %d', cur_step)
+    return last_eval_top1, no_improve_evals, False
+  
+  logging.info('Running evaluation on checkpoint: %s', ckpt_path)
+  eval_result = perform_evaluation(model, builder, eval_steps,
+                                   ckpt_path, strategy, topology)
+  
+  top1_key = 'eval/label_top_1_accuracy'
+  top5_key = 'eval/label_top_5_accuracy'
+  top1 = float(eval_result.get(top1_key, 0.0))
+  top5 = float(eval_result.get(top5_key, 0.0))
+  logging.info('Evaluation results: top-1=%.4f, top-5=%.4f', top1, top5)
+  
+  should_stop = False
+  new_no_improve_evals = no_improve_evals
+  
+  if last_eval_top1 is not None:
+    improvement = top1 - last_eval_top1
+    logging.info('[Epoch %.1f] Previous top-1: %.4f, Current top-1: %.4f', 
+                 current_epoch, last_eval_top1, top1)
+    logging.info('[Epoch %.1f] Absolute improvement: %.5f (%.2f%%)', 
+                 current_epoch, improvement, improvement * 100)
+    
+    if improvement < eval_stop_training_rating:
+      new_no_improve_evals += 1
+      logging.info('Improvement < %.1f%% threshold. '
+                   'Consecutive low-improvement evals: %d / %d',
+                   eval_stop_training_rating * 100, new_no_improve_evals, 
+                   no_improve_evals_epoch_cap)
+    else:
+      new_no_improve_evals = 0
+      logging.info('Improvement >= %.1f%% threshold. '
+                   'Reset consecutive counter to 0.',
+                   eval_stop_training_rating * 100)
+    
+    # Check stopping criteria
+    if new_no_improve_evals >= no_improve_evals_epoch_cap:
+      should_stop = True
+      logging.info('Stopping criteria met: %d consecutive low-improvement evals.',
+                   new_no_improve_evals)
+  else:
+    logging.info('[Epoch %.1f] First evaluation - establishing baseline top-1: %.4f', 
+                 current_epoch, top1)
+  
+  logging.info('=' * 80)
+  return top1, new_no_improve_evals, should_stop
+
+
+def check_early_stop(cur_step, original_train_steps, no_improve_evals,
+                     no_improve_evals_epoch_cap, current_epoch, top1, 
+                     eval_stop_training_rating, train_epochs):
+  """Check if early stopping should be triggered.
+  
+  Args:
+    cur_step: Current training step.
+    original_train_steps: Original target training steps.
+    no_improve_evals: Count of consecutive low-improvement evaluations.
+    no_improve_evals_epoch_cap: Max consecutive low-improvement evals before stopping.
+    current_epoch: Current epoch number.
+    top1: Current top-1 accuracy.
+    eval_stop_training_rating: Minimum improvement threshold.
+    train_epochs: Total training epochs.
+    
+  Returns:
+    True if training should stop early.
+  """
+  if no_improve_evals >= no_improve_evals_epoch_cap:
+    logging.info('=' * 80)
+    logging.info('EARLY STOPPING TRIGGERED AT EPOCH %.1f!', current_epoch)
+    logging.info('Top-1 accuracy improved < %.1f%% for %d consecutive evals.',
+                 eval_stop_training_rating * 100, no_improve_evals_epoch_cap)
+    logging.info('Final top-1 accuracy: %.4f at epoch %.1f', top1, current_epoch)
+    logging.info('Early stopping: stopped before reaching epoch %d goal.',
+                 train_epochs)
+    logging.info('=' * 80)
+    return True
+  return False
+
+
+def check_late_stop(cur_step, original_train_steps, no_improve_evals,
+                    no_improve_evals_epoch_cap, train_epochs):
+  """Check if late stopping should allow training to continue or stop.
+  
+  Args:
+    cur_step: Current training step.
+    original_train_steps: Original target training steps.
+    no_improve_evals: Count of consecutive low-improvement evaluations.
+    no_improve_evals_epoch_cap: Max consecutive low-improvement evals before stopping.
+    train_epochs: Total training epochs.
+    
+  Returns:
+    True if training should stop (criteria met), False if should continue.
+  """
+  if cur_step >= original_train_steps:
+    if no_improve_evals < no_improve_evals_epoch_cap:
+      # Continue training - model is still improving
+      logging.info('Reached epoch %d goal, but model still improving '
+                   '(%d/%d low-improvement evals). Continuing training...',
+                   train_epochs, no_improve_evals, no_improve_evals_epoch_cap)
+      return False  # Don't stop
+    else:
+      # Stop training - criteria met
+      logging.info('Reached epoch %d goal and stopping criteria met.', train_epochs)
+      return True  # Stop
+  return False  # Haven't reached goal yet
 
 
 def perform_evaluation(model, builder, eval_steps, ckpt, strategy, topology):
@@ -589,17 +738,29 @@ def main(argv):
 
     steps_per_loop = checkpoint_steps
 
-    # Early stopping configuration: run periodic linear evaluation and stop if
-    # top-1 accuracy fails to improve by threshold for consecutive evals.
+    # Early and late stopping configuration
     enable_early_stop = (
-        FLAGS.train_mode == 'pretrain' and FLAGS.lineareval_while_pretraining)
+        FLAGS.train_mode == 'pretrain' and FLAGS.lineareval_while_pretraining 
+        and FLAGS.early_stop)
+    enable_late_stop = (
+        FLAGS.train_mode == 'pretrain' and FLAGS.lineareval_while_pretraining 
+        and FLAGS.late_stop)
     eval_interval_epochs = FLAGS.eval_interval_epochs
     eval_interval_steps = eval_interval_epochs * epoch_steps
     last_eval_top1 = None
     no_improve_evals = 0
     eval_stop_training_rating = FLAGS.early_stop_threshold
     no_improve_evals_epoch_cap = FLAGS.early_stop_epochs
-    next_eval_step = eval_interval_steps
+    
+    # Set the first evaluation step based on early_stop flag
+    if enable_early_stop:
+      # Early stop: evaluate from the beginning
+      next_eval_step = eval_interval_steps
+    elif enable_late_stop:
+      # Late stop only: evaluate only after reaching train_epochs
+      next_eval_step = train_steps + eval_interval_steps
+    else:
+      next_eval_step = None  # No evaluation
 
     def single_step(features, labels):
       with tf.GradientTape() as tape:
@@ -687,13 +848,17 @@ def main(argv):
       global_step = optimizer.iterations
       cur_step = global_step.numpy()
       iterator = iter(ds)
+      original_train_steps = train_steps
       logging.info('Starting training loop: cur_step=%d, train_steps=%d', 
                    cur_step, train_steps)
       if enable_early_stop:
-        logging.info('Early stopping enabled: eval every %d steps (every %d epochs)',
+        logging.info('Early stopping enabled: eval from beginning every %d steps (every %d epochs)',
                      eval_interval_steps, eval_interval_epochs)
+      if enable_late_stop:
+        logging.info('Late stopping enabled: training will continue beyond %d epochs '
+                     'if model is still improving', FLAGS.train_epochs)
       
-      while cur_step < train_steps:
+      while True:
         # Calls to tf.summary.xyz lookup the summary writer resource which is
         # set by the summary writer's context manager.
         logging.info('Training steps %d to %d...', cur_step, 
@@ -713,62 +878,60 @@ def main(argv):
         for metric in all_metrics:
           metric.reset_state()
         
-        # Periodic linear evaluation and early stopping logic.
-        if enable_early_stop and cur_step >= next_eval_step:
-          logging.info('=' * 80)
-          logging.info('PERIODIC EVALUATION at step %d', cur_step)
-          logging.info('Next scheduled eval step: %d', next_eval_step)
-          ckpt_path = checkpoint_manager.latest_checkpoint
-          if ckpt_path:
-            logging.info('Running evaluation on checkpoint: %s', ckpt_path)
-            eval_result = perform_evaluation(model, builder, eval_steps,
-                                             ckpt_path, strategy, topology)
-            top1_key = 'eval/label_top_1_accuracy'
-            top5_key = 'eval/label_top_5_accuracy'
-            top1 = float(eval_result.get(top1_key, 0.0))
-            top5 = float(eval_result.get(top5_key, 0.0))
-            logging.info('Evaluation results: top-1=%.4f, top-5=%.4f', top1, top5)
-            
-            if last_eval_top1 is not None:
-              improvement = top1 - last_eval_top1
-              logging.info('Previous top-1: %.4f, Current top-1: %.4f', 
-                           last_eval_top1, top1)
-              logging.info('Absolute improvement: %.5f (%.2f%%)', 
-                           improvement, improvement * 100)
-              
-              if improvement < eval_stop_training_rating:
-                no_improve_evals += 1
-                logging.info('Improvement < %.1f%% threshold. '
-                             'Consecutive low-improvement evals: %d / %d',
-                             eval_stop_training_rating * 100, no_improve_evals, 
-                             no_improve_evals_epoch_cap)
-              else:
-                no_improve_evals = 0
-                logging.info('Improvement >= %.1f%% threshold. '
-                             'Reset consecutive counter to 0.',
-                             eval_stop_training_rating * 100)
-              
-              if no_improve_evals >= no_improve_evals_epoch_cap:
-                logging.info('=' * 80)
-                logging.info('EARLY STOPPING TRIGGERED!')
-                logging.info('Top-1 accuracy improved < %.1f%% for %d consecutive evals.',
-                             eval_stop_training_rating * 100, no_improve_evals_epoch_cap)
-                logging.info('Final top-1 accuracy: %.4f', top1)
-                logging.info('=' * 80)
-                break
-            else:
-              logging.info('First evaluation - establishing baseline top-1: %.4f', 
-                           top1)
-            
-            last_eval_top1 = top1
-          else:
-            logging.warning('No checkpoint found for evaluation at step %d', cur_step)
+        # Periodic linear evaluation logic
+        should_evaluate = (
+            (enable_early_stop or enable_late_stop) and 
+            next_eval_step is not None and 
+            cur_step >= next_eval_step
+        )
+        
+        if should_evaluate:
+          # Run evaluation and get updated tracking variables
+          last_eval_top1, no_improve_evals, should_stop = run_periodic_evaluation(
+              model, builder, eval_steps, checkpoint_manager, strategy, topology,
+              cur_step, epoch_steps, FLAGS.train_epochs, last_eval_top1, 
+              no_improve_evals, eval_stop_training_rating, no_improve_evals_epoch_cap
+          )
           
           next_eval_step += eval_interval_steps
           logging.info('Next evaluation scheduled at step: %d', next_eval_step)
-          logging.info('=' * 80)
+          
+          # Check for early stopping (before reaching epoch goal)
+          if should_stop and enable_early_stop and cur_step < original_train_steps:
+            current_epoch = cur_step / epoch_steps
+            if check_early_stop(cur_step, original_train_steps, no_improve_evals,
+                               no_improve_evals_epoch_cap, current_epoch, 
+                               last_eval_top1, eval_stop_training_rating, FLAGS.train_epochs):
+              break
+          
+          # Check for late stopping (after reaching epoch goal)
+          if should_stop and enable_late_stop and cur_step >= original_train_steps:
+            current_epoch = cur_step / epoch_steps
+            logging.info('=' * 80)
+            logging.info('LATE STOPPING TRIGGERED AT EPOCH %.1f!', current_epoch)
+            logging.info('Top-1 accuracy improved < %.1f%% for %d consecutive evals.',
+                         eval_stop_training_rating * 100, no_improve_evals_epoch_cap)
+            logging.info('Final top-1 accuracy: %.4f at epoch %.1f', last_eval_top1, current_epoch)
+            logging.info('Late stopping: continued training beyond epoch %d goal.',
+                         FLAGS.train_epochs)
+            logging.info('=' * 80)
+            break
+        
+        # Check if training should stop or continue based on epoch goal
+        if cur_step >= original_train_steps:
+          if enable_late_stop:
+            # With late_stop enabled, use the late stop logic
+            if check_late_stop(cur_step, original_train_steps, no_improve_evals,
+                              no_improve_evals_epoch_cap, FLAGS.train_epochs):
+              break
+            # Otherwise continue training (message logged in check_late_stop)
+          else:
+            # No late stop - just finish at the goal
+            logging.info('Reached epoch %d goal.', FLAGS.train_epochs)
+            break
       
-      logging.info('Training complete. Final step: %d / %d', cur_step, train_steps)
+      logging.info('Training complete. Final step: %d (original goal: %d)', 
+                   cur_step, original_train_steps)
 
     if FLAGS.mode == 'train_then_eval':
       perform_evaluation(model, builder, eval_steps,
